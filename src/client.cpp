@@ -5,7 +5,7 @@
 #include <iostream>
 #include <string>
 
-static int32_t read_full(int clientFd, char* buf, size_t n){
+static int32_t read_full(int clientFd, char* buf, ssize_t n){
     while(n > 0){
         ssize_t recieved = recv(clientFd, buf, n, 0);
         if(recieved <= 0){
@@ -21,7 +21,7 @@ static int32_t read_full(int clientFd, char* buf, size_t n){
     return 0;
 }
 
-static int32_t write_full(int clientFd, char* msg, size_t length){
+static int32_t write_full(int clientFd, char* msg, ssize_t length){
     while(length > 0){
         ssize_t written = send(clientFd, msg, length, 0);
         if(written <= 0){
@@ -92,8 +92,10 @@ int main(void){
         return -1;
     }
 
-    std::string msg = "Yo what up Server!\n";
-    query(fd, msg);
+    std::string msg1 = "Yo what up Server!\n";
+    std::string msg2 = "hello2\n";
+    query(fd, msg1);
+    query(fd, msg2);
     close(fd);
     return 0;
 }
