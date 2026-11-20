@@ -4,6 +4,7 @@
 #include <unistd.h>
 #include <iostream>
 #include <string>
+#include <vector>
 
 static int32_t read_full(int clientFd, char* buf, ssize_t n){
     while(n > 0){
@@ -37,24 +38,26 @@ static int32_t write_full(int clientFd, char* msg, ssize_t length){
     return 0;
 }
 
-static int32_t query(int fd, std::string& text) {
+static int32_t send_req(int fd, const std::string& text) {
     uint32_t size = (uint32_t) text.size();
     std::string full_msg;
     full_msg.reserve(4+size);
     full_msg.append(reinterpret_cast<const char*>(&size), 4);
     full_msg += text;
     int error = write_full(fd, full_msg.data(), full_msg.size());
-    std::cout << "sending msg = " << full_msg << "\n";
     if(error){
         std::cerr << "error with sending message to server\n";
         return -1;
     }
+    return 0;
+}
 
+static int32_t read_res(int fd) {
     // read response from server
     // the header is 4 bytes, which is the size of the message
     // process header
     char buf[4 + 4096];
-    error = read_full(fd, buf, 4); //for now assume little endian
+    int error = read_full(fd, buf, 4); //for now assume little endian
     if(error){
         std::cerr << "error fully reading request header\n";
         return error;
@@ -72,7 +75,7 @@ static int32_t query(int fd, std::string& text) {
         std::cerr << "error fully reading request body\n";
         return error;
     }
-    
+
     std::cout << "[CLIENT] server said: " << std::string(buf+4, len) << "\n";
     return 0;
 }
@@ -92,10 +95,27 @@ int main(void){
         return -1;
     }
 
-    std::string msg1 = "Yo what up Server!\n";
-    std::string msg2 = "hello2\n";
-    query(fd, msg1);
-    query(fd, msg2);
+    std::string bigMsg(10000, 'x');  // > MAX_MSG_SIZE (4096) to force multiple recv iterations
+    std::vector<std::string> requests{"hello1\n", "hello2\n", "hello3\n", bigMsg};
+
+    // send every request first (pipelining)
+    for(const auto& req : requests){
+        if(send_req(fd, req)){
+            std::cerr << "error sending request\n";
+            close(fd);
+            return -1;
+        }
+    }
+
+    // then read every response
+    for(size_t i = 0; i < requests.size(); ++i){
+        if(read_res(fd)){
+            std::cerr << "error reading response\n";
+            close(fd);
+            return -1;
+        }
+    }
+
     close(fd);
     return 0;
 }

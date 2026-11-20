@@ -6,8 +6,7 @@
 
 namespace SugRedis {
     enum class ProcessingState{
-        ReadingHeader,
-        ReadingBody,
+        Reading,
         Writing
     };
 
@@ -16,13 +15,10 @@ namespace SugRedis {
         std::vector<uint8_t> requestData;
         uint32_t requestLength = 0;
         
-        std::vector<uint8_t> responseData{
-            std::begin("\x0a\x00\x00\x00Hello, bud"),
-            std::end("\x0a\x00\x00\x00Hello, bud") - 1
-        };
+        std::vector<uint8_t> responseData;
         size_t responseCursor = 0;  //points to next byte of response to be written
 
-        ProcessingState state = ProcessingState::ReadingHeader;
+        ProcessingState state = ProcessingState::Reading;
         ClientState(int fd) : fd_(fd){}
     };
 
@@ -40,6 +36,7 @@ namespace SugRedis {
 
 
         private:
+        void parseBatch(int fd);
         void handleIncomingConnections();
         void handleClientRequest(int fd);
         void disconnectClient(int fd);

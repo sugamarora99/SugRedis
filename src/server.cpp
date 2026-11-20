@@ -87,6 +87,59 @@ void Server::disconnectClient(int fd){
     clients[fd].reset();
 }
 
+// processes all data in request buffer for a given client
+void Server::parseBatch(int fd){
+    auto& requestVec = clients[fd]->requestData;
+    if(requestVec.size() < 4){
+        //not enough info to process the request, header is incomplete
+        return;
+    }
+
+    bool processed = false;
+
+    //process headers first
+    size_t i = 0;
+    while(i+4 <= requestVec.size()){
+        uint32_t len = 0;
+        memcpy(&len, &requestVec[i], 4);
+        if(len > kMaxMessageSize){
+            std::cerr << "Invalid request length beyond max size for client " << fd << "\n";
+            disconnectClient(fd);
+            return;
+        }
+        if(requestVec.size() >= i + 4 + len){
+            // we have recieved the complete request
+            std::string responseBody = "The server has recieved your message of length " + std::to_string(len) + "\n";
+            uint32_t responseLen = (uint32_t) responseBody.size();
+            auto& resp = clients[fd]->responseData;
+            resp.reserve(resp.size() + 4 + responseLen);
+            //add header to buffer
+            resp.insert(resp.end(),
+                        reinterpret_cast<uint8_t*>(&responseLen),
+                        reinterpret_cast<uint8_t*>(&responseLen) + 4);
+            // add body to buffer
+            resp.insert(resp.end(), responseBody.begin(), responseBody.end());
+
+            i += 4 + len;
+            processed = true;
+        } else{
+            // we have not recived all of the data for this request yet
+            break;
+        }
+    }
+
+    if (i > 0){
+        //remove procesed requests from buffer
+        requestVec.erase(requestVec.begin(), requestVec.begin() + i);
+    }
+
+    if (processed) {
+        clients[fd]->state = ProcessingState::Writing;
+        clients[fd]->responseCursor = 0;
+        poller.mod(fd, false, true);
+    }
+}
+
 void Server::handleClientRequest(int fd){
     // since we are using nonblocking sockets, for a client, the server can be in the middle of reading the message OR
     // in the middle of writing response to the client
@@ -96,14 +149,16 @@ void Server::handleClientRequest(int fd){
     while(true){
         char buf[MAX_MSG_SIZE];
         // read as much data from client as possible. (until EAGAIN)
+        // client can send multiple requests in one go (pipelining)
         if(clients[fd]->state != ProcessingState::Writing){
             auto& dataVec = clients[fd]->requestData;
             ssize_t bytesRead = recv(fd, buf, sizeof(buf), 0);
             if(bytesRead > 0){
                 dataVec.insert(dataVec.end(), buf, buf+ bytesRead);
             }
-            else if(bytesRead == 0){
+            else if(bytesRead == 0){    //client has disconnected
                 // close client fd, reset() in vector
+                // parseBatch(fd);
                 ::close(fd);
                 clients[fd].reset();
                 poller.del(fd);
@@ -111,43 +166,13 @@ void Server::handleClientRequest(int fd){
             }
             else if(errno == EAGAIN || errno == EWOULDBLOCK){
                 // we have read all that we can
+                // now parse all the request data we have for complete requests
+                parseBatch(fd);
                 break;
             } else {
                 // genuine error
                 disconnectClient(fd);
                 break;
-            }
-
-            if(clients[fd]->state == ProcessingState::ReadingHeader){
-                if(dataVec.size() < 4){
-                    //wait until next event where there is enough data.
-                    break;
-                } else{
-                    //process header
-                    uint32_t length = 0;
-                    memcpy(&length, &dataVec[0], 4);
-                    if(length > kMaxMessageSize){
-                        std::cerr << "Invalid request length beyond max size for client " << fd << "\n";
-                        disconnectClient(fd);
-                        break;
-                    }
-                    clients[fd]->requestLength = length;
-                    clients[fd]->state = ProcessingState::ReadingBody;
-                }
-            } 
-            if(clients[fd]->state == ProcessingState::ReadingBody) {
-                // processing body
-                if(dataVec.size() > 4+clients[fd]->requestLength){
-                    std::cerr << "BUG invalid request data length " << dataVec.size() << " for client " << fd << " should be " << 4+clients[fd]->requestLength << "\n";
-                    disconnectClient(fd);
-                    break;
-                }
-                if(dataVec.size() == 4+clients[fd]->requestLength){
-                    poller.mod(fd, false, true);
-                    clients[fd]->state = ProcessingState::Writing;
-                    clients[fd]->requestData.clear(); // O(n) - TODO: potentially redesign this
-                    clients[fd]->requestLength = 0;
-                }
             }
         } else{
             // flow for handling response
@@ -175,8 +200,9 @@ ssize_t bytesWritten = send(fd, reinterpret_cast<const char*>(response.data() + 
                 clients[fd]->responseCursor += bytesWritten;
                 // have we written the entire response already?
                 if(clients[fd]->responseCursor == response.size()){
-                    clients[fd]->state = ProcessingState::ReadingHeader;
+                    clients[fd]->state = ProcessingState::Reading;
                     clients[fd]->responseCursor = 0;
+                    clients[fd]->responseData.clear();
                     poller.mod(fd, true, false);
                     break;
                 }
