@@ -13,7 +13,6 @@ namespace SugRedis {
     struct ClientState {
         int fd_;
         std::vector<uint8_t> requestData;
-        uint32_t requestLength = 0;
         
         std::vector<uint8_t> responseData;
         size_t responseCursor = 0;  //points to next byte of response to be written

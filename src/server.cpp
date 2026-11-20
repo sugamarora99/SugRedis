@@ -1,5 +1,5 @@
 #include "server.h"
-#include <stdio.h>
+#include "resp.h"
 #include <netinet/in.h>
 #include <iostream>
 #include <string>
@@ -10,7 +10,6 @@
 namespace SugRedis {
 
 constexpr size_t MAX_MSG_SIZE = 4096;
-constexpr size_t kMaxMessageSize = 64 * 1024;
 
 bool Server::init(){
     //IPv4 + TCP
@@ -89,48 +88,25 @@ void Server::disconnectClient(int fd){
 
 // processes all data in request buffer for a given client
 void Server::parseBatch(int fd){
-    auto& requestVec = clients[fd]->requestData;
-    if(requestVec.size() < 4){
-        //not enough info to process the request, header is incomplete
-        return;
-    }
-
+    auto& req = clients[fd]->requestData;
+    size_t cursor = 0;
     bool processed = false;
 
-    //process headers first
-    size_t i = 0;
-    while(i+4 <= requestVec.size()){
-        uint32_t len = 0;
-        memcpy(&len, &requestVec[i], 4);
-        if(len > kMaxMessageSize){
-            std::cerr << "Invalid request length beyond max size for client " << fd << "\n";
-            disconnectClient(fd);
-            return;
-        }
-        if(requestVec.size() >= i + 4 + len){
-            // we have recieved the complete request
-            std::string responseBody = "The server has recieved your message of length " + std::to_string(len) + "\n";
-            uint32_t responseLen = (uint32_t) responseBody.size();
-            auto& resp = clients[fd]->responseData;
-            resp.reserve(resp.size() + 4 + responseLen);
-            //add header to buffer
-            resp.insert(resp.end(),
-                        reinterpret_cast<uint8_t*>(&responseLen),
-                        reinterpret_cast<uint8_t*>(&responseLen) + 4);
-            // add body to buffer
-            resp.insert(resp.end(), responseBody.begin(), responseBody.end());
+    while (true) {
+        std::vector<std::string> args;
+        ParseResult r = parseRawInput(req, cursor, args);
+        if (r == ParseResult::NeedMoreData) break;
+        if (r == ParseResult::Error) { disconnectClient(fd); return; }
 
-            i += 4 + len;
-            processed = true;
-        } else{
-            // we have not recived all of the data for this request yet
-            break;
-        }
+        std::string reply = args.empty() ? respError("ERR empty command")
+                                         : respBulkString(args[0]);
+        clients[fd]->responseData.insert(clients[fd]->responseData.end(),
+                                         reply.begin(), reply.end());
+        processed = true;
     }
 
-    if (i > 0){
-        //remove procesed requests from buffer
-        requestVec.erase(requestVec.begin(), requestVec.begin() + i);
+    if (cursor > 0) {
+        req.erase(req.begin(), req.begin() + cursor);
     }
 
     if (processed) {
@@ -158,7 +134,6 @@ void Server::handleClientRequest(int fd){
             }
             else if(bytesRead == 0){    //client has disconnected
                 // close client fd, reset() in vector
-                // parseBatch(fd);
                 ::close(fd);
                 clients[fd].reset();
                 poller.del(fd);
@@ -185,7 +160,7 @@ void Server::handleClientRequest(int fd){
             }
 
             // continue sending response
-ssize_t bytesWritten = send(fd, reinterpret_cast<const char*>(response.data() + clients[fd]->responseCursor), response.size() - clients[fd]->responseCursor, 0);
+            ssize_t bytesWritten = send(fd, reinterpret_cast<const char*>(response.data() + clients[fd]->responseCursor), response.size() - clients[fd]->responseCursor, 0);
             if(bytesWritten < 0){
                 if(errno == EAGAIN || errno == EWOULDBLOCK){
                     break;
@@ -211,7 +186,6 @@ ssize_t bytesWritten = send(fd, reinterpret_cast<const char*>(response.data() + 
     }
 }
 
-//TODO: add RESP2 (Redis protocol) parsing
 // core event loop
 void Server::run(){
     while(1){

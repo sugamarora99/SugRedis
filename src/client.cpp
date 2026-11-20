@@ -2,6 +2,7 @@
 #include <stdio.h>
 #include <netinet/in.h>
 #include <unistd.h>
+#include <cstdlib>
 #include <iostream>
 #include <string>
 #include <vector>
@@ -38,13 +39,29 @@ static int32_t write_full(int clientFd, char* msg, ssize_t length){
     return 0;
 }
 
-static int32_t send_req(int fd, const std::string& text) {
-    uint32_t size = (uint32_t) text.size();
-    std::string full_msg;
-    full_msg.reserve(4+size);
-    full_msg.append(reinterpret_cast<const char*>(&size), 4);
-    full_msg += text;
-    int error = write_full(fd, full_msg.data(), full_msg.size());
+// encode a command as a RESP array of bulk strings
+static std::string encodeCommand(const std::vector<std::string>& args) {
+    std::string out = "*" + std::to_string(args.size()) + "\r\n";
+    for (const auto& a : args) {
+        out += "$" + std::to_string(a.size()) + "\r\n" + a + "\r\n";
+    }
+    return out;
+}
+
+// read bytes until \r\n (inclusive), return the line without \r\n
+static std::string readLine(int fd) {
+    std::string line;
+    char c;
+    while (read_full(fd, &c, 1) == 0) {
+        if (c == '\r') { read_full(fd, &c, 1); return line; }  // consume '\n'
+        line += c;
+    }
+    return line;
+}
+
+static int32_t send_req(int fd, const std::vector<std::string>& args) {
+    std::string msg = encodeCommand(args);
+    int error = write_full(fd, msg.data(), msg.size());
     if(error){
         std::cerr << "error with sending message to server\n";
         return -1;
@@ -53,30 +70,46 @@ static int32_t send_req(int fd, const std::string& text) {
 }
 
 static int32_t read_res(int fd) {
-    // read response from server
-    // the header is 4 bytes, which is the size of the message
-    // process header
-    char buf[4 + 4096];
-    int error = read_full(fd, buf, 4); //for now assume little endian
-    if(error){
-        std::cerr << "error fully reading request header\n";
-        return error;
-    }
-    uint32_t len = 0;
-    memcpy(&len, buf, 4);
-    if(len > 4096){
-        std::cerr << "invalid head, message too long\n";
+    char type;
+    if(read_full(fd, &type, 1) != 0){
+        std::cerr << "error reading reply type\n";
         return -1;
     }
 
-    // process the message body
-    error = read_full(fd, &buf[4], len);
-    if(error){
-        std::cerr << "error fully reading request body\n";
-        return error;
+    std::string line = readLine(fd);
+    switch(type){
+        case '+':
+            std::cout << line << "\n";
+            break;
+        case '-':
+            std::cout << "(error) " << line << "\n";
+            break;
+        case ':':
+            std::cout << "(integer) " << line << "\n";
+            break;
+        case '$': {
+            long len = std::strtol(line.c_str(), nullptr, 10);
+            if(len < 0){
+                std::cout << "(nil)\n";
+                break;
+            }
+            std::string body((size_t)len, '\0');
+            if(read_full(fd, body.data(), len) != 0){
+                std::cerr << "error reading bulk string body\n";
+                return -1;
+            }
+            char crlf[2];
+            if(read_full(fd, crlf, 2) != 0){
+                std::cerr << "error reading bulk string terminator\n";
+                return -1;
+            }
+            std::cout << body << "\n";
+            break;
+        }
+        default:
+            std::cerr << "unknown reply type '" << type << "'\n";
+            return -1;
     }
-
-    std::cout << "[CLIENT] server said: " << std::string(buf+4, len) << "\n";
     return 0;
 }
 
@@ -95,12 +128,17 @@ int main(void){
         return -1;
     }
 
-    std::string bigMsg(10000, 'x');  // > MAX_MSG_SIZE (4096) to force multiple recv iterations
-    std::vector<std::string> requests{"hello1\n", "hello2\n", "hello3\n", bigMsg};
+    std::vector<std::vector<std::string>> commands = {
+        {"PING"},
+        {"ECHO", "hello world"},
+        {"SET", "foo", "bar"},
+        {"GET", "foo"},
+        {"ECHO", std::string(10000, 'x')},  // large payload to exercise multi-recv
+    };
 
     // send every request first (pipelining)
-    for(const auto& req : requests){
-        if(send_req(fd, req)){
+    for(const auto& cmd : commands){
+        if(send_req(fd, cmd)){
             std::cerr << "error sending request\n";
             close(fd);
             return -1;
@@ -108,7 +146,7 @@ int main(void){
     }
 
     // then read every response
-    for(size_t i = 0; i < requests.size(); ++i){
+    for(size_t i = 0; i < commands.size(); ++i){
         if(read_res(fd)){
             std::cerr << "error reading response\n";
             close(fd);
