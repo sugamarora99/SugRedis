@@ -1,5 +1,6 @@
 #include "server.h"
 #include "resp.h"
+#include "utils.h"
 #include <netinet/in.h>
 #include <iostream>
 #include <string>
@@ -86,6 +87,46 @@ void Server::disconnectClient(int fd){
     clients[fd].reset();
 }
 
+// returns server response string
+std::string Server::executeCommand(std::vector<std::string> args){
+    if (args.empty()) return respError("ERR empty command");
+
+    if(SugRedis::Utils::iStrEquals(args[0], "PING")){
+        // either returns PONG or returns its argument verbatim
+        if (args.size() > 2) return respError("ERR wrong number of arguments for 'ping'");
+        return args.size() == 1 ? respSimpleString("PONG") : respBulkString(args[1]);
+    }
+    else if(SugRedis::Utils::iStrEquals(args[0], "ECHO")){
+        // returns its argument verbatim
+        if (args.size() != 2) return respError("ERR wrong number of arguments for 'echo'");
+        return respBulkString(args[1]);
+    }
+    else if(SugRedis::Utils::iStrEquals(args[0], "SET")){
+        if (args.size() != 3) return respError("ERR wrong number of arguments for 'set'");
+        dataStore.set(std::move(args[1]), std::move(args[2]));
+        return respSimpleString("OK");
+    }
+    else if(SugRedis::Utils::iStrEquals(args[0], "GET")){
+        if (args.size() != 2) return respError("ERR wrong number of arguments for 'get'");
+        std::string out;
+        if (dataStore.get(args[1], out)) return respBulkString(out);
+        return respNullBulk();
+    }
+    else if(SugRedis::Utils::iStrEquals(args[0], "DEL")){
+        // user can pass multiple keys to be deleted in a single DEL command
+        if (args.size() < 2) return respError("ERR wrong number of arguments for 'del'");
+        long long count = 0;
+        for (size_t i = 1; i < args.size(); ++i) {
+            if (dataStore.del(args[i])) ++count;
+        }
+        return respInteger(count);
+    }
+    else{
+        // unsupported/unknown command
+        return respError("ERR unknown command '" + args[0] + "'");
+    }
+}
+
 // processes all data in request buffer for a given client
 void Server::parseBatch(int fd){
     auto& req = clients[fd]->requestData;
@@ -98,8 +139,7 @@ void Server::parseBatch(int fd){
         if (r == ParseResult::NeedMoreData) break;
         if (r == ParseResult::Error) { disconnectClient(fd); return; }
 
-        std::string reply = args.empty() ? respError("ERR empty command")
-                                         : respBulkString(args[0]);
+        std::string reply = executeCommand(std::move(args));
         clients[fd]->responseData.insert(clients[fd]->responseData.end(),
                                          reply.begin(), reply.end());
         processed = true;

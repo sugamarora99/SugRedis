@@ -88,6 +88,7 @@ static int32_t read_res(int fd) {
             std::cout << "(integer) " << line << "\n";
             break;
         case '$': {
+            //first parse the length of the response bulk string
             long len = std::strtol(line.c_str(), nullptr, 10);
             if(len < 0){
                 std::cout << "(nil)\n";

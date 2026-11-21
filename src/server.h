@@ -2,6 +2,7 @@
 #define SERVER_H
 #include <vector>
 #include "poller.h"
+#include "store.h"
 #include <unistd.h>
 
 namespace SugRedis {
@@ -23,28 +24,30 @@ namespace SugRedis {
 
     class Server {
         public:
-        Server() : serverFd_(-1) {}
-        ~Server(){
-            if(serverFd_ >= 0){
-                ::close(serverFd_);
+            Server() : serverFd_(-1) {}
+            ~Server(){
+                if(serverFd_ >= 0){
+                    ::close(serverFd_);
+                }
             }
-        }
 
-        bool init();    // create/bind/listen server socket, setup epoll/kqueue
-        void run();     // loop
+            bool init();    // create/bind/listen server socket, setup epoll/kqueue
+            void run();     // loop
 
 
         private:
-        void parseBatch(int fd);
-        void handleIncomingConnections();
-        void handleClientRequest(int fd);
-        void disconnectClient(int fd);
+            void parseBatch(int fd);
+            void handleIncomingConnections();
+            void handleClientRequest(int fd);
+            void disconnectClient(int fd);
+            std::string executeCommand(std::vector<std::string> args);
 
-        int serverFd_;
-        Poller poller;
+            int serverFd_;
+            Poller poller;
 
-        // vector is optimal because max fd value is bounded by the # of fds currently open
-        std::vector<std::unique_ptr<ClientState>> clients;
+            // vector is optimal because max fd value is bounded by the # of fds currently open
+            std::vector<std::unique_ptr<ClientState>> clients;
+            Store dataStore;
     };
 
 };  // namespace SugRedis
