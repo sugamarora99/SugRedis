@@ -26,7 +26,7 @@ else()
     message(FATAL_ERROR "Unsupported platform: ${CMAKE_SYSTEM_NAME}")
 endif()
 
-add_executable(server src/server.cpp ${POLLER_SRC})
+add_executable(server src/server.cpp src/store.cpp ${POLLER_SRC})
 target_include_directories(server PRIVATE src)
 
 add_executable(client src/client.cpp)
